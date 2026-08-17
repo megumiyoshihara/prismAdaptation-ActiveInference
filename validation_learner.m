@@ -163,7 +163,7 @@ for h = 1:cfg.Nsession
 
         if cfg.draw == 1
             figure_output_validation(Nm, Q_state.s(:,t), targetX, targetY, C4disp);
-            title(['session', num2str(h), ', trial', num2str(t)]);
+            title(['Trial:', num2str(h,'%03d'), ', Step:', num2str(t,'%03d')]);
             drawnow;
         end
 
