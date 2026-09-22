@@ -27,15 +27,21 @@ other toolbox is used, and there is no `addpath` or `startup.m`: every file sits
 flat in the repository root and is called by bare name, so **MATLAB's current
 folder must be the repository root**.
 
-**Python 3** — only for the paper figures, not for the simulation:
+**Python 3** — only for the paper figures, not for the simulation.  Developed
+and run on 3.8.10, with:
 
 ```
 plotly==5.24.1
 kaleido==0.2.1
 pandas==2.0.3
-openpyxl
-scipy
+numpy==1.24.4
+scipy==1.10.1
+openpyxl==3.1.5
 ```
+
+`numpy` and `openpyxl` come in as dependencies of `pandas`, and `scipy` is used
+only by `--stats`; the versions above are the ones the figures were produced
+with.
 
 `kaleido` must stay at 0.2.1.  The 1.x releases expect a real Chrome
 installation and cannot write SVG here.
@@ -70,6 +76,7 @@ record_video      % writes result/*.avi (Linux) or result/*.mp4 (Windows, macOS)
 # --- paper figures, from the .xlsx the MATLAB side wrote ---
 python3 paper_figures.py             # every figure -> PA_figure/*.svg
 python3 paper_figures.py fig2 fig4   # a subset
+python3 paper_figures.py --data      # the plotted numbers -> PA_source_data/*.xlsx
 python3 paper_figures.py --stats     # the statistical tests, as one table
 ```
 
@@ -206,6 +213,14 @@ number, column A is the simulation number**, and the block from B2 is the
 `PA_figure/`.  Selection there is always by label (`.loc`), never by position,
 precisely because of the header row and label column.
 
+`--data` writes what the panels plot instead of drawing them: one workbook per
+figure in `PA_source_data/`, one sheet per panel, named after the panel and
+indexed by its x axis.  Bands are exported as the statistics they are drawn
+from -- `n, mean, sd, var, mean-sd, mean+sd` for the panels that shade a mean
+band, `n, q25, median, q75` for the ones that shade quartiles -- and the scatter
+panels export their points, one row per simulation.  Where a panel draws several
+bands, each set of columns carries the name of its group.
+
 | figure | contents |
 |---|---|
 | Fig1 | error decay in a minimal two-state model, against its analytical solution |
@@ -213,6 +228,56 @@ precisely because of the header row and label column.
 | Fig3 | randomised target: the same four panels, plus duration by Manhattan distance |
 | Fig4 | validation learning curves, and the main experiment's generalisation error |
 | Fig5 | robustness to sensory noise and to the learning rate |
+
+### Reproducing a figure
+
+Every panel is drawn from a batch of the simulation, so reproducing a figure
+means running the batches its workbooks come from and then calling
+`paper_figures.py`.  `repeat_main` is a script that starts from a single
+`default_config(...)` line: edit that line to the overrides of a row below and
+run it once per row.
+
+| figure | run | overrides | workbook |
+|---|---|---|---|
+| Fig1 | `fig1_simulation` | none -- the script is self-contained and writes its own workbook | `fig1_simulation.xlsx` |
+| Fig2b | `prepare_pretraining` | none -- the panel pairs the policy before and after pretraining for the target (7,5); after is slice `loop = (7-1)*Nm+5 = 65` of the stack, before is the uniform policy it starts from | `pretrained_policy_main.mat` |
+| Fig2c-f | `repeat_main` x2 | `'randhand', 2` once with `'sim_type', "transfer"` and once with `"naive"` | `result_main_transfer_hand.xlsx`, `result_main_naive_hand.xlsx` |
+| Fig3a-d | `repeat_main` x2 | `'randhand', 3`, again once per `sim_type` | `result_main_transfer_target.xlsx`, `result_main_naive_target.xlsx` |
+| Fig3e | `repeat_main` x6 | `'randhand', 4, 'MD', k` for k = 1..6, transfer only (k = 1 is the default run) | `result_main_transfer_MD{k}.xlsx` |
+| Fig4a-c | `repeat_validation` | none | `result_valid.xlsx` |
+| Fig4d,e | -- | the Fig2c-f transfer run supplies them, as its `C_Gerror` and `lambda_Gerror` sheets | `result_main_transfer_hand.xlsx` |
+| Fig5a,b | `repeat_main` x6 | `'randhand', 2, 'blur', b` for b = 5, 10, 20, 30, 40, 50, transfer only | `result_main_transfer_hand_blur{b}.xlsx` |
+| Fig5c,d | `repeat_main` x6 | `'randhand', 2, 'risk_divisor', k` for k = 2, 5, 10, 20, 50, 100, transfer only | `result_main_transfer_hand_riskRangeby{k}.xlsx` |
+
+Both Fig5 sweeps start at the unswept level, and `blur` 0 and `risk_divisor` 1
+are exact no-ops, so their first level is the Fig2c-f transfer run rather than a
+workbook of its own.
+
+Fig2b is the only panel `paper_figures.py` does not draw: it is a pair of policy
+heat maps, laid back onto the monitor grid by `Cfordisplay` the way
+`figure_output_main` draws them during a recorded run.  The pretrained half is
+slice 65 of `learnedC`; the half before pretraining needs no run of its own,
+being the policy every pretraining starts from -- `qc0 = ones(Nd, Ns) *
+qcWeight` in `pretraining_atXY_main`, with `qcWeight = 1`, i.e. 0.25 on each of
+the four actions everywhere.
+
+The pretrained policies are shared by every main-experiment row, but the
+position files are per regime, and `prepare_all` generates only the ones the
+default regime needs:
+
+```matlab
+prepare_all                                        % pretraining, plus randhand 4 at MD 1
+prepare_positions(default_config('randhand', 3))   % Fig3a-d
+prepare_positions(default_config('MD', k))         % Fig3e, once per k = 2..6
+prepare_validation(validation_config())            % Fig4a-c
+```
+
+Then copy the workbooks into `PA_excel/` and draw:
+
+```bash
+python3 paper_figures.py          # 22 SVG into PA_figure/
+python3 paper_figures.py --data   # the numbers behind them into PA_source_data/
+```
 
 ---
 
