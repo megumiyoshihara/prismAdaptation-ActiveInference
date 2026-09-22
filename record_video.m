@@ -15,7 +15,7 @@ clear;
 
 cfg = default_config( ...
     'sim_type', "transfer", ...  % "proposed" learner
-    'randhand', 1,          ...  % random hand, fixed target
+    'randhand', 2,          ...  % random hand, fixed target
     'simN',     1,          ...  % first simulation of the batch
     'record',   1,          ...  % implies cfg.draw = 1
     'saveMat',  0);              % video only; set to 1 to keep the snapshots too
