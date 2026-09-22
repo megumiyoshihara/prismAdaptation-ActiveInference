@@ -18,6 +18,8 @@ and label column, all selection here is by label (``.loc``), never by position
 Usage:
     python3 paper_figures.py               # every figure
     python3 paper_figures.py fig2 fig4     # a subset
+    python3 paper_figures.py --data        # the numbers behind the figures, as xlsx
+    python3 paper_figures.py --data fig2   # the numbers behind one figure
     python3 paper_figures.py --stats       # one table with every statistical test
 """
 
@@ -38,6 +40,7 @@ from plotly.subplots import make_subplots
 
 DATA_DIR = Path("PA_excel")
 OUT_DIR = Path("PA_figure")
+SOURCE_DIR = Path("PA_source_data")  # one workbook per figure, written by --data
 
 # Sweep levels.  Blur 0 and risk divisor 1 are the unswept run, so they resolve
 # to the plain const file on their own.
@@ -253,16 +256,43 @@ def read_sheet(filename, sheet):
     return read_sheets(filename, [sheet])[sheet]
 
 
+def mean_frame(df):
+    """Per-session mean, sd and variance across simulations, with the plotted band.
+
+    sd and var are the sample statistics (ddof=1), and the last two columns are
+    the band the panels shade: mean -/+ sd.
+    """
+    m, s = df.mean(), df.std()
+    return pd.DataFrame({"n": df.count(), "mean": m, "sd": s, "var": df.var(),
+                         "mean-sd": m - s, "mean+sd": m + s})
+
+
+def quantile_frame(df):
+    """Per-session n and quartiles across simulations, i.e. the plotted band."""
+    q = df.quantile([0.25, 0.5, 0.75])
+    return pd.DataFrame({"n": df.count(), "q25": q.loc[0.25],
+                         "median": q.loc[0.50], "q75": q.loc[0.75]})
+
+
 def mean_band(df):
     """(mean - sd, mean, mean + sd) across simulations, indexed by session."""
-    m, s = df.mean(), df.std()
-    return m - s, m, m + s
+    f = mean_frame(df)
+    return f["mean-sd"], f["mean"], f["mean+sd"]
 
 
 def quantile_band(df):
     """(q25, q50, q75) across simulations, indexed by session."""
-    q = df.quantile([0.25, 0.5, 0.75])
-    return q.loc[0.25], q.loc[0.50], q.loc[0.75]
+    f = quantile_frame(df)
+    return f["q25"], f["median"], f["q75"]
+
+
+def labelled(frame, group):
+    """One statistics frame with its column names prefixed by the group it describes.
+
+    Panels that draw more than one band put them side by side on one sheet, so
+    "median" becomes e.g. "naive median".
+    """
+    return frame.add_prefix(group + " ")
 
 
 def sessions(df):
@@ -278,6 +308,23 @@ def save(fig, name):
     print(f"  wrote {path}")
 
 
+def write_source_data(name):
+    """Write the numbers figure `name` plots to SOURCE_DIR, one sheet per panel.
+
+    Every sheet is named after the panel it belongs to and is indexed by that
+    panel's x axis, so a sheet holds exactly the curve, band or point cloud the
+    panel draws and nothing else.
+    """
+    print(f"{name} source data")
+    sheets = SOURCE_DATA[name]()  # collected first, so a missing workbook is
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)  # reported before a file is opened
+    path = SOURCE_DIR / f"{name}_source_data.xlsx"
+    with pd.ExcelWriter(path) as writer:
+        for sheet, frame in sheets.items():
+            frame.to_excel(writer, sheet_name=sheet)
+    print(f"  wrote {path}")
+
+
 def _theoretical(x, a=0.0389, b=-3.0):
     """The analytic error decay the validation curves are compared against."""
     return np.exp(-(a * np.asarray(x, dtype=float) + b))
@@ -288,27 +335,34 @@ def _theoretical(x, a=0.0389, b=-3.0):
 # ---------------------------------------------------------------------------
 
 
-def _fig1_base():
-    """The traces both Fig1 panels share, before the axis type is chosen.
+# The two update rules, drawn one learner per figure: the naive learner's counts
+# are normalised straight away and decay as 1/t^2, the transfer learner's are
+# softmaxed and decay as exp(-t).  Each entry names the sheets fig1_simulation.m
+# wrote and the colours the simulated runs and the analytic curve are drawn in.
+FIG1_LEARNERS = {
+    "naive": dict(err="err1", th="th1", err_color="rgb(0.5,0,0)", th_color="Red"),
+    "transfer": dict(err="err2", th="th2", err_color="rgb(0,0,0.3)", th_color="Blue"),
+}
 
-    Ten runs of each update rule (err1 dark red, err2 dark blue) with the two
-    analytic curves (th1 red, th2 blue) drawn thick on top.  fig1() then saves
-    the same figure twice, once log-log and once semi-log.
+
+def _fig1_base(learner):
+    """The traces one learner's Fig1 panels share, before the axis type is chosen.
+
+    Ten runs of that learner's update rule, with its analytic curve drawn thick
+    on top.  fig1() then saves the same figure twice, once log-log and once
+    semi-log.
     """
-    df = read_sheets(FIG1_FILE, ["err1", "err2", "th1", "th2"])
-    x = sessions(df["err1"])  # step index 1..10000
+    style = FIG1_LEARNERS[learner]
+    df = read_sheets(FIG1_FILE, [style["err"], style["th"]])
+    err, th = df[style["err"]], df[style["th"]]
+    x = sessions(err)  # step index 1..10000
 
     fig = make_subplots(rows=1, cols=1)
-    for sim in df["err1"].index:
-        fig.add_trace(go.Scatter(x=x, y=df["err1"].loc[sim], mode="lines",
-                                 line=dict(color="rgb(0.5,0,0)")))
-    for sim in df["err2"].index:
-        fig.add_trace(go.Scatter(x=sessions(df["err2"]), y=df["err2"].loc[sim], mode="lines",
-                                 line=dict(color="rgb(0,0,0.3)")))
-    fig.add_trace(go.Scatter(x=sessions(df["th1"]), y=df["th1"].iloc[0], mode="lines",
-                             line=dict(color="Red", width=5)))
-    fig.add_trace(go.Scatter(x=sessions(df["th2"]), y=df["th2"].iloc[0], mode="lines",
-                             line=dict(color="Blue", width=5)))
+    for sim in err.index:
+        fig.add_trace(go.Scatter(x=x, y=err.loc[sim], mode="lines",
+                                 line=dict(color=style["err_color"])))
+    fig.add_trace(go.Scatter(x=sessions(th), y=th.iloc[0], mode="lines",
+                             line=dict(color=style["th_color"], width=5)))
 
     fig.update_layout(go.Layout(
         height=500, width=600, plot_bgcolor="white",
@@ -328,21 +382,43 @@ def _fig1_base():
 
 
 def fig1():
-    """Fig1: the error curves against their analytic prediction, linear and log x."""
-    print("fig1")
-    fig = _fig1_base()
-    fig.update_xaxes(**axis(**DOT_GRID, showgrid=False,
-                            title="step", type="linear", range=(1, 100)))
-    save(fig, "fig1a_semilog.svg")
+    """Fig1: the error curves against their analytic prediction, one figure per learner.
 
-    # Same traces, log x.
+    Each learner gets the same pair of panels, linear x then log x, so the naive
+    and the transfer decay can be shown side by side without overplotting.
+    """
+    print("fig1")
     minor_x, _ = make_logtick(1, 10000, "power")
-    fig.update_xaxes(
-        type="log", range=(0, 4), tickvals=[1, 10, 100, 1000, 10000],
-        exponentformat="none",
-        minor=dict(ticks="outside", tickvals=minor_x, ticklen=5, tickcolor="Black"),
-    )
-    save(fig, "fig1b_loglog.svg")
+    for learner in FIG1_LEARNERS:
+        fig = _fig1_base(learner)
+        fig.update_xaxes(**axis(**DOT_GRID, showgrid=False,
+                                title="step", type="linear", range=(1, 100)))
+        save(fig, f"fig1a_{learner}_semilog.svg")
+
+        # Same traces, log x.
+        fig.update_xaxes(
+            type="log", range=(0, 4), tickvals=[1, 10, 100, 1000, 10000],
+            exponentformat="none",
+            minor=dict(ticks="outside", tickvals=minor_x, ticklen=5, tickcolor="Black"),
+        )
+        save(fig, f"fig1b_{learner}_loglog.svg")
+
+
+def _data_fig1():
+    """Numbers behind Fig1: one sheet per learner, indexed by step.
+
+    Both panels of a learner draw the same traces and differ only in the x axis,
+    so one sheet covers them: the ten simulated runs plus the analytic curve.
+    """
+    sheets = {}
+    for learner, style in FIG1_LEARNERS.items():
+        df = read_sheets(FIG1_FILE, [style["err"], style["th"]])
+        frame = df[style["err"]].T
+        frame.columns = [f"run {sim}" for sim in frame.columns]
+        frame["analytic"] = df[style["th"]].iloc[0]
+        frame.index.name = "step"
+        sheets[f"fig1_{learner}"] = frame
+    return sheets
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +615,61 @@ def fig3():
     save(_panel_md_duration(), "fig3e_md_duration.svg")
 
 
+def _condition_data(cond, prefix):
+    """Numbers behind the four panels a target regime gets, keyed by panel name.
+
+    The panels of Fig2 and Fig3 read the same quantities out of the two
+    workbooks `cond` selects, so both figures build their sheets here.
+    """
+    proposed, naive = CONDITIONS[cond]["proposed"], CONDITIONS[cond]["naive"]
+
+    # a: only the sessions the broken axis actually shows, 1-18 and 130-200.
+    x = mean_frame(read_sheet(proposed, "relPos"))
+    x = pd.concat([x.loc[1:18], x.loc[130:200]])
+    x.index.name = "session"
+
+    lam = read_sheets(proposed, ["truelambdaList", "shiftedlambdaList"])
+    weights = pd.concat([
+        labelled(quantile_frame(lam["truelambdaList"]), "exposure target"),
+        labelled(quantile_frame(lam["shiftedlambdaList"]), "baseline target"),
+    ], axis=1)
+    weights.index.name = "session"
+
+    proposed_t, naive_t = read_sheet(proposed, "t"), read_sheet(naive, "t")
+    duration = pd.concat([
+        labelled(quantile_frame(proposed_t), "transfer"),
+        labelled(quantile_frame(naive_t), "naive"),
+    ], axis=1)
+    duration.index.name = "session"
+
+    # d: the point cloud itself -- one marker per simulation, naive against transfer.
+    scatter = pd.DataFrame({"naive (x)": naive_t.loc[:, SCATTER_SESSION],
+                            "transfer (y)": proposed_t.loc[:, SCATTER_SESSION]})
+    scatter.index.name = "simulation"
+
+    return {
+        f"{prefix}a_x_broken": x,
+        f"{prefix}b_lambda": weights,
+        f"{prefix}c_duration": duration,
+        f"{prefix}d_duration_scatter_at{SCATTER_SESSION}": scatter,
+    }
+
+
+def _data_fig2():
+    """Numbers behind Fig2, the fixed-target regime."""
+    return _condition_data("const", "fig2")
+
+
+def _data_fig3():
+    """Numbers behind Fig3: the Fig2 sheets for the random target, plus the MD sweep."""
+    sheets = _condition_data("rnd", "fig3")
+    md = pd.DataFrame({k: quantile_frame(read_sheet(MD_FILE.format(k=k), "t")).loc[
+        NOISE_SUMMARY_SESSION] for k in MD_LEVELS}).T
+    md.index.name = "Manhattan distance"
+    sheets[f"fig3e_md_duration_at{NOISE_SUMMARY_SESSION}"] = md
+    return sheets
+
+
 # ---------------------------------------------------------------------------
 # Fig 4 -- validation experiment and the main run's generalisation error
 # ---------------------------------------------------------------------------
@@ -697,9 +828,56 @@ def fig4():
          "fig4e_main_lambda_error.svg")
 
 
+def _valid_frame(sheet):
+    """Quartiles of one validation sheet, indexed by the step count the panels use."""
+    df = read_sheet(VALID_FILE, sheet)
+    frame = quantile_frame(df)
+    frame.index = _valid_x(df)
+    frame.index.name = "step"
+    return frame
+
+
+def _analytic_frame(x):
+    """The dashed analytic curve, on the x grid the panel draws it over."""
+    return pd.DataFrame({"analytic": _theoretical(x)}, index=pd.Index(x, name="step"))
+
+
+def _main_error_frame(sheet):
+    """Quartiles of one generalisation-error sheet of the fixed-target run."""
+    frame = quantile_frame(read_sheet(CONDITIONS["const"]["proposed"], sheet))
+    frame.index.name = "session"
+    return frame
+
+
+def _data_fig4():
+    """Numbers behind Fig4.
+
+    The analytic curves of panels a and c sit on their own sheets because they
+    are drawn on a different x grid from the simulated quartiles.  Panel c shows
+    the same transfer-learner curve as panel b over a shorter range, so its
+    sheet repeats those numbers.
+    """
+    return {
+        "fig4a_valid_lambda_error": _valid_frame("lambda_Gerror"),
+        "fig4a_analytic": _analytic_frame(np.arange(0, 300) * 10),
+        "fig4b_valid_C_loglog": pd.concat([
+            labelled(_valid_frame("transfer"), "transfer"),
+            labelled(_valid_frame("naive"), "naive"),
+        ], axis=1),
+        "fig4c_valid_C_semilog": _valid_frame("transfer"),
+        "fig4c_analytic": _analytic_frame(np.arange(1.2, 4, 0.1) * 100),
+        "fig4d_main_C_error": _main_error_frame("C_Gerror"),
+        "fig4e_main_lambda_error": _main_error_frame("lambda_Gerror"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Fig 5 -- sensory noise and learning-rate sweeps
 # ---------------------------------------------------------------------------
+
+
+# The blur levels Fig5a draws a row for, out of the full NOISE_LEVELS sweep.
+NOISE_PANEL_LEVELS = (0, 10, 50)
 
 
 def _noised_file(level):
@@ -712,7 +890,7 @@ def _by_file(level):
     return _main_file("transfer", "hand", risk_divisor=level)
 
 
-def _panel_noised_lambda(levels=(0, 10, 50)):
+def _panel_noised_lambda(levels=NOISE_PANEL_LEVELS):
     """One row per noise level, both mixing weights in each.
 
     Every curve keeps plotly's default width here -- unlike the single-panel
@@ -800,6 +978,38 @@ def fig5():
         save(_panel_by_summary(session), f"fig5{letter}_by_x_at{session}.svg")
 
 
+def _data_fig5():
+    """Numbers behind Fig5: the noise rows, the noise summary and the two rate panels."""
+    noised = []
+    for level in NOISE_PANEL_LEVELS:
+        df = read_sheets(_noised_file(level), ["truelambdaList", "shiftedlambdaList"])
+        noised.append(labelled(quantile_frame(df["truelambdaList"]),
+                               f"blur{level} exposure target"))
+        noised.append(labelled(quantile_frame(df["shiftedlambdaList"]),
+                               f"blur{level} baseline target"))
+    noised = pd.concat(noised, axis=1)
+    noised.index.name = "session"
+
+    summary = pd.DataFrame({
+        level: quantile_frame(read_sheet(_noised_file(level), "truelambdaList")).loc[
+            NOISE_SUMMARY_SESSION] for level in NOISE_LEVELS}).T
+    summary.index.name = "blur"
+
+    sheets = {"fig5a_noised_lambda": noised,
+              f"fig5b_noised_lambda_at{NOISE_SUMMARY_SESSION}": summary}
+
+    # c and d: the x axis is the learning rate 1/k, so the divisor k rides along
+    # as a column rather than as the index.
+    for letter, session in zip("cd", BY_SUMMARY_SESSIONS):
+        rows = {1.0 / level: mean_frame(read_sheet(_by_file(level), "relPos")).loc[session]
+                for level in BY_LEVELS}
+        frame = pd.DataFrame(rows).T
+        frame.insert(0, "risk divisor k", BY_LEVELS)
+        frame.index.name = "learning rate 1/k"
+        sheets[f"fig5{letter}_by_x_at{session}"] = frame
+    return sheets
+
+
 # ---------------------------------------------------------------------------
 # Statistics (printed, not plotted)
 # ---------------------------------------------------------------------------
@@ -881,12 +1091,18 @@ def print_stats():
 
 FIGURES = {"fig1": fig1, "fig2": fig2, "fig3": fig3, "fig4": fig4, "fig5": fig5}
 
+# The same figures, as the numbers their panels plot.  --data writes one
+# workbook per entry into SOURCE_DIR.
+SOURCE_DATA = {"fig1": _data_fig1, "fig2": _data_fig2, "fig3": _data_fig3,
+               "fig4": _data_fig4, "fig5": _data_fig5}
+
 
 def main(argv):
     """Draw the figures named on the command line, or every figure by default.
 
-    With --stats no figure is drawn; the statistical tests are printed instead.
-    Returns the process exit status.
+    With --data the panels are not drawn; the numbers they plot are written to
+    SOURCE_DIR instead.  With --stats neither happens and the statistical tests
+    are printed.  Returns the process exit status.
     """
     if "--stats" in argv:
         print_stats()
@@ -900,7 +1116,10 @@ def main(argv):
         return 1
 
     for name in names:
-        FIGURES[name]()
+        if "--data" in argv:
+            write_source_data(name)
+        else:
+            FIGURES[name]()
     return 0
 
 
